@@ -1,5 +1,6 @@
 package com.my.samle.bitmap;
 
+import com.my.samle.bitmap.utils.Pair;
 import lombok.EqualsAndHashCode;
 import lombok.extern.slf4j.Slf4j;
 import org.roaringbitmap.RoaringBitmap;
@@ -9,7 +10,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
+import static com.my.samle.bitmap.utils.BooleanUtils.not;
 import static java.util.Arrays.asList;
 import static org.apache.commons.lang3.ArrayUtils.toObject;
 
@@ -23,7 +26,7 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
 
     private static final ForkJoinPool forkJoinPool = new ForkJoinPool(10);
 
-    private Map<Integer, RoaringBitmap> highLowBitsContainer = new ConcurrentHashMap<>();
+    private Map<Integer, RoaringBitmap> highLowBitsContainer = new HashMap<>();
     private final RoaringBitmap highBitsBitmap = new RoaringBitmap();
 
     public void add(final long x) {
@@ -48,26 +51,27 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
      * @param bitmap2 other bitmap
      */
     public void and(final RoaringBitmap64Bit bitmap2) {
-        highBitsBitmap.and(bitmap2.highBitsBitmap);
-        final List<Integer> highBits = asList(toObject(highBitsBitmap.toArray()));
-        final Map<Integer, RoaringBitmap> resultHighLowBitsContainer = new ConcurrentHashMap<>(highBits.size());
+        final RoaringBitmap highBitsAndResult = RoaringBitmap.and(highBitsBitmap, bitmap2.highBitsBitmap);
         try {
-            forkJoinPool.submit(() ->
-                    highBits.stream().parallel()
-                            .forEach(highBit -> {
-                                final RoaringBitmap resultLowBits = highLowBitsContainer.get(highBit);
-                                resultLowBits.and(bitmap2.highLowBitsContainer.get(highBit));
-                                if (resultLowBits.isEmpty()) {
-                                    removeFromHighBits(highBit);
-                                } else {
-                                    resultHighLowBitsContainer.put(highBit, resultLowBits);
-                                }
-                            })).get();
+            highLowBitsContainer = forkJoinPool.submit(() ->
+                            Arrays.stream(highBitsAndResult.toArray())
+                                    .parallel()
+                                    .boxed()
+                                    .map(highBit -> lowBitsAnd(this, bitmap2, highBit))
+                                    .filter(this::notEmptyLowBits)
+                                    .collect(Collectors.toMap(Pair::getKey, Pair::getValue))
+            ).get();
+            refreshHighBitsBitmap();
         } catch (InterruptedException | ExecutionException e) {
             log.error("Unable to do AND operation", e);
             throw new IllegalArgumentException("Unable to do AND operation", e);
         }
-        highLowBitsContainer = resultHighLowBitsContainer;
+    }
+
+    private void refreshHighBitsBitmap() {
+        highBitsBitmap.clear();
+        highLowBitsContainer.keySet()
+                .forEach(highBitsBitmap::add);
     }
 
     /**
@@ -146,6 +150,16 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
             i++;
         }
         return result;
+    }
+
+    private boolean notEmptyLowBits(Pair<Integer, RoaringBitmap> bitsPair) {
+        return not(bitsPair.getValue().isEmpty());
+    }
+
+    private Pair<Integer, RoaringBitmap> lowBitsAnd(RoaringBitmap64Bit bitmap1, RoaringBitmap64Bit bitmap2, Integer highBit) {
+        RoaringBitmap lowBits1 = bitmap1.highLowBitsContainer.get(highBit);
+        RoaringBitmap lowBits2 = bitmap2.highLowBitsContainer.get(highBit);
+        return new Pair<>(highBit, RoaringBitmap.and(lowBits1, lowBits2));
     }
 
     private RoaringBitmap or(final RoaringBitmap bitmap1, final RoaringBitmap bitmap2) {
