@@ -95,26 +95,20 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
      * @param bitmap2 other bitmap
      */
     public void andNot(final RoaringBitmap64Bit bitmap2) {
-        final List<Integer> highBits = asList(toObject(highBitsBitmap.toArray()));
-        final Map<Integer, RoaringBitmap> resultHighLowBitsContainer = new ConcurrentHashMap<>(highBits.size());
         try {
-            forkJoinPool.submit(() ->
-                    highBits.stream().parallel()
-                            .forEach(highBit -> {
-                                final RoaringBitmap resultLowBits = highLowBitsContainer.get(highBit);
-                                Optional.ofNullable(bitmap2.highLowBitsContainer.get(highBit))
-                                        .ifPresent(resultLowBits::andNot);
-                                if (resultLowBits.isEmpty()) {
-                                    removeFromHighBits(highBit);
-                                } else {
-                                    resultHighLowBitsContainer.put(highBit, resultLowBits);
-                                }
-                            })).get();
+            highLowBitsContainer = forkJoinPool.submit(() ->
+                            Arrays.stream(highBitsBitmap.toArray())
+                                    .parallel()
+                                    .boxed()
+                                    .map(highBit -> lowBitsAndNot(this, bitmap2, highBit))
+                                    .filter(this::notEmptyLowBits)
+                                    .collect(Collectors.toMap(Pair::getKey, Pair::getValue))
+            ).get();
+            refreshHighBitsBitmap();
         } catch (InterruptedException | ExecutionException e) {
             log.error("Unable to do AND operation", e);
             throw new IllegalArgumentException("Unable to do AND operation", e);
         }
-        highLowBitsContainer = resultHighLowBitsContainer;
     }
 
     public int getCardinality() {
@@ -164,6 +158,14 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
         RoaringBitmap lowBits1 = bitmap1.highLowBitsContainer.get(highBit);
         RoaringBitmap lowBits2 = bitmap2.highLowBitsContainer.get(highBit);
         return new Pair<>(highBit, or(lowBits1, lowBits2));
+    }
+
+    private Pair<Integer, RoaringBitmap> lowBitsAndNot(RoaringBitmap64Bit bitmap1, RoaringBitmap64Bit bitmap2, Integer highBit) {
+        final RoaringBitmap lowBits1 = bitmap1.highLowBitsContainer.get(highBit);
+        final RoaringBitmap resultLowBits = Optional.ofNullable(bitmap2.highLowBitsContainer.get(highBit))
+                .map(lowBits2 -> RoaringBitmap.andNot(lowBits1, lowBits2))
+                .orElse(lowBits1);
+        return new Pair<>(highBit, resultLowBits);
     }
 
     private RoaringBitmap or(final RoaringBitmap bitmap1, final RoaringBitmap bitmap2) {
