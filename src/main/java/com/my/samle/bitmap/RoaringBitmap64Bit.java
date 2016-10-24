@@ -27,7 +27,7 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
     private static final ForkJoinPool forkJoinPool = new ForkJoinPool(10);
 
     private Map<Integer, RoaringBitmap> highLowBitsContainer = new HashMap<>();
-    private final RoaringBitmap highBitsBitmap = new RoaringBitmap();
+    private RoaringBitmap highBitsBitmap = new RoaringBitmap();
 
     public void add(final long x) {
         final int highBits = getHighBits(x);
@@ -68,34 +68,25 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
         }
     }
 
-    private void refreshHighBitsBitmap() {
-        highBitsBitmap.clear();
-        highLowBitsContainer.keySet()
-                .forEach(highBitsBitmap::add);
-    }
-
     /**
      * In-place bitwise OR (union) operation. The current bitmap is modified.
      *
      * @param bitmap2 other bitmap
      */
     public void or(final RoaringBitmap64Bit bitmap2) {
-        highBitsBitmap.or(bitmap2.highBitsBitmap);
-        final List<Integer> highBits = asList(toObject(highBitsBitmap.toArray()));
-        final Map<Integer, RoaringBitmap> resultHighLowBitsContainer = new ConcurrentHashMap<>(highBits.size());
+        highBitsBitmap = RoaringBitmap.or(highBitsBitmap, bitmap2.highBitsBitmap);
         try {
-            forkJoinPool.submit(() ->
-                    highBits.stream().parallel()
-                            .forEach(highBit -> {
-                                RoaringBitmap resultLowBits = or(highLowBitsContainer.get(highBit),
-                                        bitmap2.highLowBitsContainer.get(highBit));
-                                resultHighLowBitsContainer.put(highBit, resultLowBits);
-                            })).get();
+            highLowBitsContainer = forkJoinPool.submit(() ->
+                            Arrays.stream(highBitsBitmap.toArray())
+                                    .parallel()
+                                    .boxed()
+                                    .map(highBit -> lowBitsOr(this, bitmap2, highBit))
+                                    .collect(Collectors.toMap(Pair::getKey, Pair::getValue))
+            ).get();
         } catch (InterruptedException | ExecutionException e) {
             log.error("Unable to do AND operation", e);
             throw new IllegalArgumentException("Unable to do AND operation", e);
         }
-        highLowBitsContainer = resultHighLowBitsContainer;
     }
 
     /**
@@ -152,6 +143,13 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
         return result;
     }
 
+    private void refreshHighBitsBitmap() {
+        highBitsBitmap.clear();
+        highLowBitsContainer.keySet()
+                .forEach(highBitsBitmap::add);
+    }
+
+
     private boolean notEmptyLowBits(Pair<Integer, RoaringBitmap> bitsPair) {
         return not(bitsPair.getValue().isEmpty());
     }
@@ -160,6 +158,12 @@ public class RoaringBitmap64Bit implements Iterable<Long> {
         RoaringBitmap lowBits1 = bitmap1.highLowBitsContainer.get(highBit);
         RoaringBitmap lowBits2 = bitmap2.highLowBitsContainer.get(highBit);
         return new Pair<>(highBit, RoaringBitmap.and(lowBits1, lowBits2));
+    }
+
+    private Pair<Integer, RoaringBitmap> lowBitsOr(RoaringBitmap64Bit bitmap1, RoaringBitmap64Bit bitmap2, Integer highBit) {
+        RoaringBitmap lowBits1 = bitmap1.highLowBitsContainer.get(highBit);
+        RoaringBitmap lowBits2 = bitmap2.highLowBitsContainer.get(highBit);
+        return new Pair<>(highBit, or(lowBits1, lowBits2));
     }
 
     private RoaringBitmap or(final RoaringBitmap bitmap1, final RoaringBitmap bitmap2) {
