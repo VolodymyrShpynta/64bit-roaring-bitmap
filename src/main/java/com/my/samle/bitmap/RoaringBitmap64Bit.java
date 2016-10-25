@@ -6,15 +6,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.roaringbitmap.RoaringBitmap;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static com.my.samle.bitmap.utils.BooleanUtils.not;
-import static java.util.Arrays.asList;
-import static org.apache.commons.lang3.ArrayUtils.toObject;
 
 /**
  * Created by Volodymyr Shpynta on 24.10.16.
